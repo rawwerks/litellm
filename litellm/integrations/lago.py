@@ -81,6 +81,7 @@ class LagoLogger(CustomLogger):
         user_id = litellm_params["metadata"].get("user_api_key_user_id", None)
         team_id = litellm_params["metadata"].get("user_api_key_team_id", None)
         org_id = litellm_params["metadata"].get("user_api_key_org_id", None)
+        verbose_logger.debug(f"DEBUGGING kwargs: {kwargs}")
         verbose_logger.debug(f"end_user_id: {end_user_id}")
         verbose_logger.debug(f"user_id: {user_id}")
         verbose_logger.debug(f"team_id: {team_id}")
