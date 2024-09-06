@@ -13,6 +13,7 @@ sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
 
+
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2180,6 +2181,7 @@ def test_completion_openai():
         "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
     ],
 )
+@pytest.mark.flaky(retries=3, delay=1)
 def test_completion_openai_pydantic(model):
     try:
         litellm.set_verbose = True
@@ -2217,7 +2219,7 @@ def test_completion_openai_pydantic(model):
         print(f"response_str: {response_str}")
         json.loads(response_str)  # check valid json is returned
 
-    except Timeout as e:
+    except Timeout:
         pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")

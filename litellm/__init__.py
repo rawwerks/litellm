@@ -140,11 +140,15 @@ return_response_headers: bool = (
 enable_json_schema_validation: bool = False
 ##################
 logging: bool = True
+enable_loadbalancing_on_batch_endpoints: Optional[bool] = None
 enable_caching_on_provider_specific_optional_params: bool = (
     False  # feature-flag for caching on optional params - e.g. 'top_k'
 )
 caching: bool = (
     False  # Not used anymore, will be removed in next MAJOR release - https://github.com/BerriAI/litellm/discussions/648
+)
+always_read_redis: bool = (
+    True  # always use redis for rate limiting logic on litellm proxy
 )
 caching_with_models: bool = (
     False  # # Not used anymore, will be removed in next MAJOR release - https://github.com/BerriAI/litellm/discussions/648
@@ -253,6 +257,7 @@ upperbound_key_generate_params: Optional[LiteLLM_UpperboundKeyGenerateParams] = 
 default_user_params: Optional[Dict] = None
 default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
+default_max_internal_user_budget: Optional[float] = None
 max_internal_user_budget: Optional[float] = None
 internal_user_budget_duration: Optional[str] = None
 max_end_user_budget: Optional[float] = None
@@ -356,6 +361,7 @@ vertex_language_models: List = []
 vertex_vision_models: List = []
 vertex_chat_models: List = []
 vertex_code_chat_models: List = []
+vertex_ai_image_models: List = []
 vertex_text_models: List = []
 vertex_code_text_models: List = []
 vertex_embedding_models: List = []
@@ -416,6 +422,9 @@ for key, value in model_cost.items():
     elif value.get("litellm_provider") == "vertex_ai-ai21_models":
         key = key.replace("vertex_ai/", "")
         vertex_ai_ai21_models.append(key)
+    elif value.get("litellm_provider") == "vertex_ai-image-models":
+        key = key.replace("vertex_ai/", "")
+        vertex_ai_image_models.append(key)
     elif value.get("litellm_provider") == "ai21":
         if value.get("mode") == "chat":
             ai21_chat_models.append(key)
@@ -799,6 +808,7 @@ openai_image_generation_models = ["dall-e-2", "dall-e-3"]
 from .timeout import timeout
 from .cost_calculator import completion_cost
 from litellm.litellm_core_utils.litellm_logging import Logging
+from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 from litellm.litellm_core_utils.core_helpers import remove_index_from_tool_calls
 from litellm.litellm_core_utils.token_counter import get_modified_max_tokens
 from .utils import (
@@ -823,13 +833,11 @@ from .utils import (
     register_prompt_template,
     validate_environment,
     check_valid_key,
-    get_llm_provider,
     register_model,
     encode,
     decode,
     _calculate_retry_after,
     _should_retry,
-    get_secret,
     get_supported_openai_params,
     get_api_base,
     get_first_chars_messages,
@@ -916,7 +924,7 @@ from .llms.bedrock.embed.amazon_titan_v2_transformation import (
     AmazonTitanV2Config,
 )
 from .llms.bedrock.embed.cohere_transformation import BedrockCohereEmbeddingConfig
-from .llms.openai import (
+from .llms.OpenAI.openai import (
     OpenAIConfig,
     OpenAITextCompletionConfig,
     MistralConfig,
@@ -931,7 +939,7 @@ from .llms.AI21.chat import AI21ChatConfig
 from .llms.fireworks_ai import FireworksAIConfig
 from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
-from .llms.azure import (
+from .llms.AzureOpenAI.azure import (
     AzureOpenAIConfig,
     AzureOpenAIError,
     AzureOpenAIAssistantsAPIConfig,

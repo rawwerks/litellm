@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from openai._models import BaseModel as OpenAIObject
+from openai.types.audio.transcription_create_params import FileTypes
 from openai.types.completion_usage import CompletionUsage
 from pydantic import ConfigDict, Field, PrivateAttr
 from typing_extensions import Callable, Dict, Required, TypedDict, override
@@ -117,6 +118,10 @@ class CallTypes(Enum):
     transcription = "transcription"
     aspeech = "aspeech"
     speech = "speech"
+
+
+class PassthroughCallTypes(Enum):
+    passthrough_image_generation = "passthrough-image-generation"
 
 
 class TopLogprob(OpenAIObject):
@@ -470,6 +475,13 @@ class Usage(CompletionUsage):
         total_tokens: Optional[int] = None,
         **params,
     ):
+        ## DEEPSEEK PROMPT TOKEN HANDLING ## - follow the anthropic format, of having prompt tokens be just the non-cached token input. Enables accurate cost-tracking - Relevant issue: https://github.com/BerriAI/litellm/issues/5285
+        if (
+            "prompt_cache_miss_tokens" in params
+            and isinstance(params["prompt_cache_miss_tokens"], int)
+            and prompt_tokens is not None
+        ):
+            prompt_tokens = params["prompt_cache_miss_tokens"]
         data = {
             "prompt_tokens": prompt_tokens or 0,
             "completion_tokens": completion_tokens or 0,
@@ -477,6 +489,7 @@ class Usage(CompletionUsage):
         }
         super().__init__(**data)
 
+        ## ANTHROPIC MAPPING ##
         if "cache_creation_input_tokens" in params and isinstance(
             params["cache_creation_input_tokens"], int
         ):
@@ -486,6 +499,12 @@ class Usage(CompletionUsage):
             params["cache_read_input_tokens"], int
         ):
             self._cache_read_input_tokens = params["cache_read_input_tokens"]
+
+        ## DEEPSEEK MAPPING ##
+        if "prompt_cache_hit_tokens" in params and isinstance(
+            params["prompt_cache_hit_tokens"], int
+        ):
+            self._cache_read_input_tokens = params["prompt_cache_hit_tokens"]
 
         for k, v in params.items():
             setattr(self, k, v)

@@ -199,6 +199,7 @@ from litellm.proxy.management_endpoints.team_callback_endpoints import (
     router as team_callback_router,
 )
 from litellm.proxy.management_endpoints.team_endpoints import router as team_router
+from litellm.proxy.openai_files_endpoints.files_endpoints import is_known_model
 from litellm.proxy.openai_files_endpoints.files_endpoints import (
     router as openai_files_router,
 )
@@ -211,11 +212,6 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
 )
 from litellm.proxy.rerank_endpoints.endpoints import router as rerank_router
 from litellm.proxy.route_llm_request import route_request
-from litellm.proxy.secret_managers.aws_secret_manager import (
-    load_aws_kms,
-    load_aws_secret_manager,
-)
-from litellm.proxy.secret_managers.google_kms import load_google_kms
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     router as spend_management_router,
 )
@@ -256,6 +252,11 @@ from litellm.router import (
 from litellm.router import ModelInfo as RouterModelInfo
 from litellm.router import updateDeployment
 from litellm.scheduler import DefaultPriorities, FlowItem, Scheduler
+from litellm.secret_managers.aws_secret_manager import (
+    load_aws_kms,
+    load_aws_secret_manager,
+)
+from litellm.secret_managers.google_kms import load_google_kms
 from litellm.types.llms.anthropic import (
     AnthropicMessagesRequest,
     AnthropicResponse,
@@ -844,7 +845,7 @@ async def _PROXY_track_cost_callback(
                 kwargs["stream"] == True and "complete_streaming_response" in kwargs
             ):
                 raise Exception(
-                    f"Model not in litellm model cost map. Add custom pricing - https://docs.litellm.ai/docs/proxy/custom_pricing"
+                    f"Model not in litellm model cost map. Passed model = {kwargs.get('model')} - Add custom pricing - https://docs.litellm.ai/docs/proxy/custom_pricing"
                 )
     except Exception as e:
         error_msg = f"error in tracking cost callback - {traceback.format_exc()}"
@@ -1620,12 +1621,6 @@ class ProxyConfig:
                 elif key == "cache" and value is False:
                     pass
                 elif key == "guardrails":
-                    if premium_user is not True:
-                        raise ValueError(
-                            "Trying to use `guardrails` on config.yaml "
-                            + CommonProxyErrors.not_premium_user.value
-                        )
-
                     guardrail_name_config_map = initialize_guardrails(
                         guardrails_config=value,
                         premium_user=premium_user,
@@ -1650,6 +1645,14 @@ class ProxyConfig:
                     verbose_proxy_logger.debug(
                         f"litellm.post_call_rules: {litellm.post_call_rules}"
                     )
+                elif key == "max_internal_user_budget":
+                    litellm.max_internal_user_budget = float(value)  # type: ignore
+                elif key == "default_max_internal_user_budget":
+                    litellm.default_max_internal_user_budget = float(value)
+                    if litellm.max_internal_user_budget is None:
+                        litellm.max_internal_user_budget = (
+                            litellm.default_max_internal_user_budget
+                        )
                 elif key == "custom_provider_map":
                     from litellm.utils import custom_llm_setup
 
@@ -1764,6 +1767,15 @@ class ProxyConfig:
                     load_aws_secret_manager(use_aws_secret_manager=True)
                 elif key_management_system == KeyManagementSystem.AWS_KMS.value:
                     load_aws_kms(use_aws_kms=True)
+                elif (
+                    key_management_system
+                    == KeyManagementSystem.GOOGLE_SECRET_MANAGER.value
+                ):
+                    from litellm.secret_managers.google_secret_manager import (
+                        GoogleSecretManager,
+                    )
+
+                    GoogleSecretManager()
                 else:
                     raise ValueError("Invalid Key Management System selected")
             key_management_settings = general_settings.get(
@@ -3693,6 +3705,7 @@ async def embeddings(
         api_base = hidden_params.get("api_base", None) or ""
         response_cost = hidden_params.get("response_cost", None) or ""
         litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
+        additional_headers: dict = hidden_params.get("additional_headers", {}) or {}
 
         fastapi_response.headers.update(
             get_custom_headers(
@@ -3705,6 +3718,7 @@ async def embeddings(
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
                 call_id=litellm_call_id,
                 request_data=data,
+                **additional_headers,
             )
         )
         await check_response_size_is_safe(response=response)
@@ -4080,6 +4094,7 @@ async def audio_transcriptions(
         api_base = hidden_params.get("api_base", None) or ""
         response_cost = hidden_params.get("response_cost", None) or ""
         litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
+        additional_headers: dict = hidden_params.get("additional_headers", {}) or {}
 
         fastapi_response.headers.update(
             get_custom_headers(
@@ -4092,6 +4107,7 @@ async def audio_transcriptions(
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
                 call_id=litellm_call_id,
                 request_data=data,
+                **additional_headers,
             )
         )
 
@@ -4979,13 +4995,35 @@ async def create_batch(
             proxy_config=proxy_config,
         )
 
+        ## check if model is a loadbalanced model
+        router_model: Optional[str] = None
+        is_router_model = False
+        if litellm.enable_loadbalancing_on_batch_endpoints is True:
+            router_model = data.get("model", None)
+            is_router_model = is_known_model(model=router_model, llm_router=llm_router)
+
         _create_batch_data = CreateBatchRequest(**data)
 
-        if provider is None:
-            provider = "openai"
-        response = await litellm.acreate_batch(
-            custom_llm_provider=provider, **_create_batch_data  # type: ignore
-        )
+        if (
+            litellm.enable_loadbalancing_on_batch_endpoints is True
+            and is_router_model
+            and router_model is not None
+        ):
+            if llm_router is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "LLM Router not initialized. Ensure models added to proxy."
+                    },
+                )
+
+            response = await llm_router.acreate_batch(**_create_batch_data)  # type: ignore
+        else:
+            if provider is None:
+                provider = "openai"
+            response = await litellm.acreate_batch(
+                custom_llm_provider=provider, **_create_batch_data  # type: ignore
+            )
 
         ### ALERTING ###
         asyncio.create_task(
@@ -5017,7 +5055,7 @@ async def create_batch(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error(
+        verbose_proxy_logger.exception(
             "litellm.proxy.proxy_server.create_batch(): Exception occured - {}".format(
                 str(e)
             )
@@ -5080,15 +5118,30 @@ async def retrieve_batch(
     global proxy_logging_obj
     data: Dict = {}
     try:
+        ## check if model is a loadbalanced model
+        router_model: Optional[str] = None
+        is_router_model = False
+
         _retrieve_batch_request = RetrieveBatchRequest(
             batch_id=batch_id,
         )
 
-        if provider is None:
-            provider = "openai"
-        response = await litellm.aretrieve_batch(
-            custom_llm_provider=provider, **_retrieve_batch_request  # type: ignore
-        )
+        if litellm.enable_loadbalancing_on_batch_endpoints is True:
+            if llm_router is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "LLM Router not initialized. Ensure models added to proxy."
+                    },
+                )
+
+            response = await llm_router.aretrieve_batch(**_retrieve_batch_request)  # type: ignore
+        else:
+            if provider is None:
+                provider = "openai"
+            response = await litellm.aretrieve_batch(
+                custom_llm_provider=provider, **_retrieve_batch_request  # type: ignore
+            )
 
         ### ALERTING ###
         asyncio.create_task(
@@ -5120,7 +5173,7 @@ async def retrieve_batch(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error(
+        verbose_proxy_logger.exception(
             "litellm.proxy.proxy_server.retrieve_batch(): Exception occured - {}".format(
                 str(e)
             )
@@ -6136,6 +6189,64 @@ async def delete_end_user(
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     pass
+
+
+@router.get(
+    "/customer/list",
+    tags=["Customer Management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=List[LiteLLM_EndUserTable],
+)
+@router.get(
+    "/end_user/list",
+    tags=["Customer Management"],
+    include_in_schema=False,
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def list_team(
+    http_request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    [Admin-only] List all available customers
+
+    ```
+    curl --location --request GET 'http://0.0.0.0:4000/customer/list' \
+        --header 'Authorization: Bearer sk-1234'
+    ```
+    """
+    from litellm.proxy.proxy_server import (
+        _duration_in_seconds,
+        create_audit_log_for_update,
+        litellm_proxy_admin_name,
+        prisma_client,
+    )
+
+    if (
+        user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN
+        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "Admin-only endpoint. Your user role={}".format(
+                    user_api_key_dict.user_role
+                )
+            },
+        )
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": CommonProxyErrors.db_not_connected_error.value},
+        )
+
+    response = await prisma_client.db.litellm_endusertable.find_many()
+
+    returned_response: List[LiteLLM_EndUserTable] = []
+    for item in response:
+        returned_response.append(LiteLLM_EndUserTable(**item.model_dump()))
+    return returned_response
 
 
 async def create_audit_log_for_update(request_data: LiteLLM_AuditLogs):
@@ -7972,8 +8083,13 @@ async def google_login(request: Request):
             # SSO providers do not allow stateless verification
             redirect_params = {}
             state = os.getenv("GENERIC_CLIENT_STATE", None)
+
             if state:
                 redirect_params["state"] = state
+            elif "okta" in generic_authorization_endpoint:
+                redirect_params["state"] = (
+                    uuid.uuid4().hex
+                )  # set state param for okta - required
             return await generic_sso.get_login_redirect(**redirect_params)  # type: ignore
     elif ui_username is not None:
         # No Google, Microsoft SSO

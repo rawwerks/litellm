@@ -244,6 +244,13 @@ class LiteLLMRoutes(enum.Enum):
         "/utils/token_counter",
     ]
 
+    mapped_pass_through_routes: List = [
+        "/bedrock",
+        "/vertex-ai",
+        "/gemini",
+        "/langfuse",
+    ]
+
     anthropic_routes: List = [
         "/v1/messages",
     ]
@@ -337,6 +344,13 @@ class LiteLLMRoutes(enum.Enum):
             "/key/update",
             "/key/delete",
             "/key/info",
+            "/global/spend/tags",
+            "/global/spend/keys",
+            "/global/spend/models",
+            "/global/spend/provider",
+            "/global/spend/end_users",
+            "/global/activity",
+            "/global/activity/model",
         ]
         + spend_tracking_routes
         + sso_only_routes
@@ -1063,6 +1077,7 @@ class KeyManagementSystem(enum.Enum):
     GOOGLE_KMS = "google_kms"
     AZURE_KEY_VAULT = "azure_key_vault"
     AWS_SECRET_MANAGER = "aws_secret_manager"
+    GOOGLE_SECRET_MANAGER = "google_secret_manager"
     LOCAL = "local"
     AWS_KMS = "aws_kms"
 
@@ -1638,6 +1653,7 @@ class AllCallbacks(LiteLLMBase):
             "LAGO_API_BASE",
             "LAGO_API_KEY",
             "LAGO_API_EVENT_CODE",
+            "LAGO_API_CHARGE_BY",
         ],
         ui_callback_name="Lago Billing",
     )

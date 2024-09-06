@@ -392,7 +392,6 @@ async def user_info(
             user_id=user_id,
             table_name="key",
             query_type="find_all",
-            expires=datetime.now(),
         )
 
         if user_info is None:
@@ -529,6 +528,13 @@ async def user_update(
                 non_default_values["budget_duration"] = (
                     litellm.internal_user_budget_duration
                 )
+                duration_s = _duration_in_seconds(
+                    duration=non_default_values["budget_duration"]
+                )
+                user_reset_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=duration_s
+                )
+                non_default_values["budget_reset_at"] = user_reset_at
 
         ## ADD USER, IF NEW ##
         verbose_proxy_logger.debug("/user/update: Received data = %s", data)
